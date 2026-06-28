@@ -1,5 +1,7 @@
 # photo-sort
 
+> Built with [Claude Code](https://claude.ai/code) (Anthropic)
+
 Two CLI tools for working with large photo archives:
 
 | Tool | What it does |
