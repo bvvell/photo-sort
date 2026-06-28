@@ -130,6 +130,14 @@ Priority order (first match wins):
 Scores every image in a folder by composite quality metrics and copies the top picks.
 Supports JPEG, PNG, TIFF, HEIC, WEBP, and RAW formats (CR2, NEF, ARW, DNG, and more — requires `rawpy`).
 
+**RAW scoring** uses the camera-embedded JPEG preview baked into every RAW file. This carries the camera's own sharpening, colour science and picture style — so metrics are calibrated the same way as shooting straight to JPEG, and processing is ~4× faster than full demosaic.
+
+**JPEG pair output** — when a selected file is RAW:
+- If a JPEG with the same basename exists next to it, that JPEG is copied alongside.
+- If no JPEG sibling exists, the embedded camera preview is extracted from the RAW and saved as a `.jpg` next to the RAW in the output folder.
+
+This means every selected RAW in the output folder always has a ready-to-view JPEG pair — no extra conversion step needed.
+
 ### Score components
 
 | Metric | Role |
@@ -152,29 +160,25 @@ Supports JPEG, PNG, TIFF, HEIC, WEBP, and RAW formats (CR2, NEF, ARW, DNG, and m
 python select_best_shots.py \
   --source /path/to/photos \
   --output /path/to/best_shots \
-  --top-percent 20 \
   --dry-run
 
-# Select top 20%, 4 workers
+# Run for real, 4 workers
 python select_best_shots.py \
   --source /path/to/photos \
   --output /path/to/best_shots \
-  --top-percent 20 \
   --workers 4
 
-# Process RAW-only archive (requires rawpy)
+# RAW-only folder — scores via embedded JPEG, extracts JPEG pair to output
 python select_best_shots.py \
   --source /path/to/raw_photos \
   --output /path/to/best_shots \
-  --top-percent 15 \
   --workers 4
 
 # One folder per shooting day, each gets its own _best subfolder
 python select_best_shots.py \
   --source /path/to/photos \
   --output /path/to/output \
-  --split-by-subfolder \
-  --top-percent 20
+  --split-by-subfolder
 ```
 
 ### Key flags
@@ -184,10 +188,10 @@ python select_best_shots.py \
 | `--source DIR` | required | Input folder |
 | `--output DIR` | required | Output folder |
 | `--top-n N` | — | Keep exactly N files |
-| `--top-percent P` | `40` | Keep top P% of scored files |
+| `--top-percent P` | `35` | Keep top P% of scored files |
 | `--workers N` | `1` | Parallel scoring processes |
 | `--copy-mode` | `flat` | `flat` or `preserve-tree` |
-| `--with-raw-pairs` | on | Copy RAW companion when selecting a JPEG |
+| `--with-raw-pairs` | on | Copy/extract JPEG companion for each selected RAW |
 | `--best-practice` | on | Technical floor + soft dedup pipeline |
 | `--min-sharpness` | `0.20` | Floor threshold (0–1) |
 | `--min-exposure` | `0.18` | Floor threshold (0–1) |
