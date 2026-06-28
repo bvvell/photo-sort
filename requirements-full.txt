@@ -1,0 +1,10 @@
+-r requirements.txt
+
+# RAW file support (CR2, NEF, ARW, DNG, etc.)
+rawpy>=0.18
+
+# Better sharpness/noise/clutter metrics in select_best_shots.py
+opencv-python>=4.8
+
+# HEIC/HEIF/AVIF support
+pillow-heif>=0.13
