@@ -22,6 +22,7 @@ Changes vs select_best_shots.py:
 from __future__ import annotations
 
 import argparse
+import io
 import logging
 import math
 import shutil
@@ -189,10 +190,8 @@ def normalized_log(value: float, scale: float) -> float:
     return min(math.log1p(value) / math.log1p(scale), 1.0)
 
 
-def find_raw_companion(path: Path) -> Optional[Path]:
-    """Case-insensitive RAW companion lookup (works on case-sensitive FS too)."""
-    if path.suffix.lower() not in JPEG_EXTENSIONS:
-        return None
+def _find_sibling(path: Path, extensions: set) -> Optional[Path]:
+    """Case-insensitive sibling lookup by stem across a set of extensions."""
     parent = path.parent
     stem_lower = path.stem.lower()
     try:
@@ -204,9 +203,23 @@ def find_raw_companion(path: Path) -> Optional[Path]:
             continue
         if sibling.stem.lower() != stem_lower:
             continue
-        if sibling.suffix.lower() in RAW_EXTENSIONS:
+        if sibling.suffix.lower() in extensions:
             return sibling
     return None
+
+
+def find_raw_companion(path: Path) -> Optional[Path]:
+    """Return the RAW sibling of a JPEG, or None."""
+    if path.suffix.lower() not in JPEG_EXTENSIONS:
+        return None
+    return _find_sibling(path, RAW_EXTENSIONS)
+
+
+def find_jpeg_companion(path: Path) -> Optional[Path]:
+    """Return the JPEG sibling of a RAW file, or None."""
+    if path.suffix.lower() not in RAW_EXTENSIONS:
+        return None
+    return _find_sibling(path, JPEG_EXTENSIONS)
 
 
 def _extract_iso(img: Image.Image) -> Optional[int]:
@@ -257,13 +270,32 @@ def _downscale_for_scoring(img: Image.Image, max_side: int) -> Image.Image:
 
 
 def _load_raw_rgb(path: Path) -> tuple[Image.Image, Optional[int], int, int]:
-    """Load RAW file via rawpy. Returns (rgb_pil, iso, width, height)."""
+    """Load RAW file via rawpy. Returns (rgb_pil, iso, width, height).
+
+    Uses the camera-embedded JPEG thumbnail for scoring when available —
+    it carries the camera's own sharpening, colour science and picture style,
+    so metrics are calibrated the same way as shooting straight to JPEG.
+    Falls back to rawpy full demosaic when no usable thumbnail is found.
+    """
     with rawpy.imread(str(path)) as raw:
         iso: Optional[int] = None
         try:
             iso = int(raw.other_params.get("iso", 0)) or None
         except Exception:
             pass
+
+        # Try embedded JPEG first (full-res preview baked in by the camera)
+        try:
+            thumb = raw.extract_thumb()
+            if thumb.format == rawpy.ThumbFormat.JPEG:
+                buf = io.BytesIO(thumb.data)
+                img = Image.open(buf).convert("RGB")
+                img = ImageOps.exif_transpose(img)
+                return img, iso, img.size[0], img.size[1]
+        except Exception:
+            pass
+
+        # Fallback: full demosaic
         rgb_np = raw.postprocess(
             use_camera_wb=True,
             half_size=False,
@@ -663,7 +695,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--source", required=True, type=Path)
     parser.add_argument("--output", required=True, type=Path)
     parser.add_argument("--top-n", type=int, default=None)
-    parser.add_argument("--top-percent", type=float, default=40.0)
+    parser.add_argument("--top-percent", type=float, default=35.0)
     parser.add_argument("--copy-mode", choices=("flat", "preserve-tree"), default="flat")
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--report", type=Path, default=None,
@@ -819,6 +851,7 @@ def run_selection(source: Path, output: Path, args: argparse.Namespace) -> int:
         output.mkdir(parents=True, exist_ok=True)
 
     copied_raw_pairs = 0
+    copied_jpeg_pairs = 0
     for item in selected:
         rel = item.path.relative_to(source)
         dest = output / rel if args.copy_mode == "preserve-tree" else output / item.path.name
@@ -838,6 +871,32 @@ def run_selection(source: Path, output: Path, args: argparse.Namespace) -> int:
                     shutil.copy2(raw_pair, raw_dest)
                 copied_raw_pairs += 1
 
+            jpeg_pair = find_jpeg_companion(item.path)
+            if jpeg_pair:
+                jpeg_rel = jpeg_pair.relative_to(source)
+                jpeg_dest = output / jpeg_rel if args.copy_mode == "preserve-tree" else output / jpeg_pair.name
+                jpeg_dest = safe_dest(jpeg_dest)
+                if not args.dry_run:
+                    jpeg_dest.parent.mkdir(parents=True, exist_ok=True)
+                    shutil.copy2(jpeg_pair, jpeg_dest)
+                copied_jpeg_pairs += 1
+            elif RAWPY_AVAILABLE and item.path.suffix.lower() in RAW_EXTENSIONS:
+                # No JPEG sibling — extract the camera's embedded JPEG preview
+                jpeg_dest = dest.with_suffix(".jpg")
+                jpeg_dest = safe_dest(jpeg_dest)
+                if not args.dry_run:
+                    try:
+                        with rawpy.imread(str(item.path)) as raw:
+                            thumb = raw.extract_thumb()
+                        if thumb.format == rawpy.ThumbFormat.JPEG:
+                            jpeg_dest.parent.mkdir(parents=True, exist_ok=True)
+                            jpeg_dest.write_bytes(thumb.data)
+                            copied_jpeg_pairs += 1
+                    except Exception:
+                        pass
+                else:
+                    copied_jpeg_pairs += 1
+
     if args.report:
         report_path = args.report.resolve()
         if args.split_by_subfolder:
@@ -856,8 +915,11 @@ def run_selection(source: Path, output: Path, args: argparse.Namespace) -> int:
         print(f"[{source.name}] Selection log: {selection_log_path}")
 
     if args.with_raw_pairs:
-        label = "found for selected JPG/JPEG" if args.dry_run else "copied"
-        print(f"[{source.name}] RAW companions {label}: {copied_raw_pairs}")
+        label = "found" if args.dry_run else "copied"
+        if copied_raw_pairs:
+            print(f"[{source.name}] RAW companions {label}: {copied_raw_pairs}")
+        if copied_jpeg_pairs:
+            print(f"[{source.name}] JPEG companions {label}: {copied_jpeg_pairs}")
     print(f"[{source.name}] Done.")
     return 0
 
